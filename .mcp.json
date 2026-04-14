@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "figma-bridge": {
+      "command": "node",
+      "args": [
+        "--import",
+        "tsx/dist/esm",
+        "src/index.ts"
+      ],
+      "cwd": "<path>/mcp-server"
+    }
+  }
+}

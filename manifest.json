@@ -1,0 +1,13 @@
+{
+  "name": "MCP Bridge",
+  "id": "figma-mcp-bridge-claude-code",
+  "api": "1.0.0",
+  "main": "code.js",
+  "ui": "ui.html",
+  "editorType": ["figma"],
+  "permissions": ["currentuser", "activeusers"],
+  "networkAccess": {
+    "allowedDomains": ["*"],
+    "reasoning": "Connects to local MCP bridge server (ws://localhost:3055) to relay Figma data to Claude Code."
+  }
+}

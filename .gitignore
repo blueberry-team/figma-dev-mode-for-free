@@ -1,0 +1,7 @@
+node_modules/
+mcp-server/node_modules/
+
+# Build outputs
+code.js
+ui.js
+mcp-server/dist/

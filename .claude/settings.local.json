@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__figma-bridge__figma_get_node",
+      "mcp__figma__get_figma_data",
+      "Bash(curl:*)",
+      "Bash(python:*)",
+      "Bash(cd:*)",
+      "Bash(npm run:*)"
+    ]
+  }
+}
