@@ -359,9 +359,11 @@ function serializeNode(
   depth: number = 0,
   maxDepth: number = 5,
   detail: DetailLevel = 'standard',
-  siblingCount: number = 0
+  siblingCount: number = 0,
+  forceDetail: boolean = false
 ): Record<string, unknown> {
-  const effectiveDetail = computeEffectiveDetail(detail, depth, siblingCount);
+  // forceDetail: 자동 강등(computeEffectiveDetail)을 우회하고 요청한 detail을 그대로 사용
+  const effectiveDetail = forceDetail ? detail : computeEffectiveDetail(detail, depth, siblingCount);
 
   // ═══ MINIMAL: id, name, type, size ═══
   const out: Record<string, unknown> = {
@@ -503,7 +505,7 @@ function serializeNode(
     const children = (node as ChildrenMixin).children;
     const childCount = children.length;
     out.children = children.map((child) =>
-      serializeNode(child as SceneNode, depth + 1, maxDepth, detail, childCount)
+      serializeNode(child as SceneNode, depth + 1, maxDepth, detail, childCount, forceDetail)
     );
   } else if ('children' in node) {
     out.childCount = (node as ChildrenMixin).children.length;
@@ -582,6 +584,26 @@ figma.ui.onmessage = async (msg: { type: string; payload?: Record<string, unknow
           result.warning = `노드가 ${childCount}개로 응답이 매우 클 수 있습니다. detail:"minimal"로 변경하거나, 특정 노드를 figma_get_node로 직접 조회하여 범위를 줄여주세요.`;
         }
         reply(result);
+        break;
+      }
+
+      // ── Full dump of current page (no auto-reduction) ───────────────────────
+      case 'get_page_full': {
+        const detail = (payload.detail as DetailLevel) ?? 'full';
+        const maxDepth = (payload.maxDepth as number) ?? 100;
+        const page = figma.currentPage;
+        const children = page.children;
+        // forceDetail=true: 자동 강등 없이 페이지 전체를 깊이 제한 없이 직렬화
+        const nodes = children.map((n) =>
+          serializeNode(n as SceneNode, 0, maxDepth, detail, 0, true)
+        );
+        reply({
+          pageId: page.id,
+          pageName: page.name,
+          topLevelCount: children.length,
+          detail,
+          nodes,
+        });
         break;
       }
 
