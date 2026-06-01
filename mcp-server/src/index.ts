@@ -8,6 +8,9 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import { randomUUID } from 'crypto';
+import { promises as fs } from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 const WS_PORT = parseInt(process.env.MCP_BRIDGE_PORT ?? '3055', 10);
 
@@ -205,6 +208,43 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'figma_get_page_full',
+      description:
+        '현재 Figma 페이지의 모든 노드를 깊이 제한 없이 full detail로 한 번에 직렬화합니다. ' +
+        '자동 강등(detail 축소)을 우회하므로 "페이지 전체를 빠짐없이" 가져옵니다. ' +
+        '응답이 거대해지는 것을 막기 위해 전체 JSON은 로컬 파일로 저장되고, ' +
+        'MCP 응답으로는 저장 경로 + 구조 요약(총 노드 수, 타입별 개수, 최대 깊이, 파일 크기, 최상위 프레임 목록)만 반환합니다. ' +
+        '함께 navigator(맵) JSON도 저장합니다: 컨테이너(SECTION/FRAME/COMPONENT/INSTANCE/GROUP 등)와 TEXT만 남기고 ' +
+        '순수 그래픽 리프(VECTOR/RECTANGLE 등)는 접어서, AI가 한 번에 읽고 전체 구조를 파악한 뒤 ' +
+        '필요한 노드만 figma_get_node(detail:"full")로 순차 조회할 수 있게 합니다. ' +
+        '전체 데이터가 필요하면 savedTo 경로를, 구조 파악은 navigatorSavedTo 경로를 Read 하세요.',
+      inputSchema: {
+        type: 'object' as const,
+        properties: {
+          outputDir: {
+            type: 'string',
+            description: '저장 디렉터리 (미지정 시 FIGMA_DUMP_DIR 환경변수, 없으면 OS 임시폴더의 figma-dumps)',
+          },
+          detail: {
+            type: 'string',
+            enum: ['standard', 'full'],
+            description: '직렬화 상세 수준 (기본값: full)',
+            default: 'full',
+          },
+          maxDepth: {
+            type: 'number',
+            description: '최대 탐색 깊이 (기본값: 100 = 사실상 무제한)',
+            default: 100,
+          },
+          navigator: {
+            type: 'boolean',
+            description: 'navigator(맵) JSON도 함께 저장할지 (기본값: true)',
+            default: true,
+          },
+        },
+      },
+    },
+    {
       name: 'figma_get_file_info',
       description: '현재 열린 Figma 파일 정보 (파일명, 페이지 목록, 현재 페이지, 선택 개수)를 반환합니다.',
       inputSchema: {
@@ -236,7 +276,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'figma_export_node',
-      description: 'Figma 노드를 PNG/SVG/JPG 이미지로 내보냅니다 (base64 반환). 실제 디자인과 구현 비교에 활용.',
+      description:
+        'Figma 노드를 PNG/SVG/JPG로 내보냅니다. ' +
+        'outputDir를 지정하면 실제 파일로 저장하고 저장 경로를 반환합니다(이미지 에셋 추출용). ' +
+        'outputDir 미지정 시 PNG/JPG는 base64 이미지, SVG는 텍스트로 반환.',
       inputSchema: {
         type: 'object' as const,
         properties: {
@@ -254,6 +297,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             type: 'number',
             description: '배율 (기본값: 2 = @2x)',
             default: 2,
+          },
+          outputDir: {
+            type: 'string',
+            description: '저장 디렉터리. 지정 시 파일로 저장하고 {savedTo} 경로를 반환합니다. 프로젝트 assets 경로 등 지정.',
+          },
+          fileName: {
+            type: 'string',
+            description: '저장 파일명(확장자 제외). 미지정 시 node-<id>로 자동 생성. outputDir와 함께 사용.',
           },
         },
         required: ['nodeId'],
@@ -351,6 +402,139 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: JSON.stringify(data) }] };
       }
 
+      case 'figma_get_page_full': {
+        const detail = (args.detail as string) ?? 'full';
+        const maxDepth = clamp(Number(args.maxDepth) || 100, 1, 200);
+        // 전체 페이지 직렬화는 무거울 수 있으므로 타임아웃을 넉넉히
+        const data = (await sendToFigma(
+          'get_page_full',
+          { detail, maxDepth },
+          120_000
+        )) as {
+          pageId: string;
+          pageName: string;
+          topLevelCount: number;
+          detail: string;
+          nodes: Array<Record<string, unknown>>;
+        };
+
+        // 트리를 순회하며 요약 통계 계산
+        const byType: Record<string, number> = {};
+        let totalNodes = 0;
+        let maxDepthReached = 0;
+        const walk = (node: Record<string, unknown>, d: number) => {
+          totalNodes++;
+          if (d > maxDepthReached) maxDepthReached = d;
+          const t = node.type as string | undefined;
+          if (t) byType[t] = (byType[t] ?? 0) + 1;
+          const children = node.children;
+          if (Array.isArray(children)) {
+            for (const c of children) walk(c as Record<string, unknown>, d + 1);
+          }
+        };
+        for (const n of data.nodes) walk(n, 0);
+
+        const topLevel = data.nodes.map((n) => ({
+          id: n.id,
+          name: n.name,
+          type: n.type,
+          width: n.width,
+          height: n.height,
+        }));
+
+        // 전체 JSON을 파일로 저장
+        const json = JSON.stringify(data, null, 2);
+        const dir =
+          (args.outputDir as string) ||
+          process.env.FIGMA_DUMP_DIR ||
+          path.join(os.tmpdir(), 'figma-dumps');
+        await fs.mkdir(dir, { recursive: true });
+        const safeName = (data.pageName || 'page')
+          .replace(/[^a-zA-Z0-9가-힣_-]+/g, '_')
+          .slice(0, 50);
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const filePath = path.join(dir, `page-${safeName}-${stamp}.json`);
+        await fs.writeFile(filePath, json, 'utf8');
+
+        // ── navigator(맵) 생성: 컨테이너 + TEXT만 남기고 그래픽 리프는 접음 ──
+        const wantNavigator = args.navigator !== false;
+        let navigatorSavedTo: string | undefined;
+        let navigatorNodes = 0;
+        let navigatorSizeBytes = 0;
+        if (wantNavigator) {
+          const CONTAINER = new Set([
+            'SECTION', 'FRAME', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'GROUP', 'SLOT',
+          ]);
+          // 접힌(그래픽) 서브트리를 타입별 개수로 집계
+          const countSubtree = (node: Record<string, unknown>, acc: Record<string, number>) => {
+            const t = node.type as string;
+            acc[t] = (acc[t] ?? 0) + 1;
+            const ch = node.children;
+            if (Array.isArray(ch)) for (const c of ch) countSubtree(c as Record<string, unknown>, acc);
+          };
+          const buildNav = (
+            node: Record<string, unknown>,
+            d: number
+          ): Record<string, unknown> | null => {
+            const t = node.type as string;
+            const isContainer = CONTAINER.has(t);
+            const isText = t === 'TEXT';
+            if (!isContainer && !isText) return null; // 그래픽 리프는 접음
+            navigatorNodes++;
+            const entry: Record<string, unknown> = { id: node.id, name: node.name, type: t, depth: d };
+            if (isText && typeof node.characters === 'string') {
+              const chars = node.characters as string;
+              entry.text = chars.length > 80 ? chars.slice(0, 80) + '…' : chars;
+            }
+            const children = Array.isArray(node.children) ? (node.children as Record<string, unknown>[]) : [];
+            if (children.length) {
+              entry.childCount = children.length;
+              const navChildren: Record<string, unknown>[] = [];
+              const collapsed: Record<string, number> = {};
+              for (const c of children) {
+                const cn = buildNav(c, d + 1);
+                if (cn) navChildren.push(cn);
+                else countSubtree(c, collapsed);
+              }
+              if (navChildren.length) entry.children = navChildren;
+              if (Object.keys(collapsed).length) entry.collapsedLeaves = collapsed;
+            }
+            return entry;
+          };
+          const navNodes = data.nodes.map((n) => buildNav(n, 0)).filter(Boolean);
+          const navData = {
+            pageId: data.pageId,
+            pageName: data.pageName,
+            fullDump: filePath,
+            legend: '컨테이너 + TEXT만 포함. 그래픽 리프는 부모의 collapsedLeaves에 타입별 개수로 요약됨. 상세는 id로 figma_get_node(detail:"full") 호출.',
+            nodes: navNodes,
+          };
+          const navJson = JSON.stringify(navData, null, 2);
+          navigatorSavedTo = path.join(dir, `nav-${safeName}-${stamp}.json`);
+          await fs.writeFile(navigatorSavedTo, navJson, 'utf8');
+          navigatorSizeBytes = Buffer.byteLength(navJson, 'utf8');
+        }
+
+        const summary = {
+          savedTo: filePath,
+          navigatorSavedTo,
+          pageId: data.pageId,
+          pageName: data.pageName,
+          detail: data.detail,
+          totalNodes,
+          navigatorNodes,
+          topLevelCount: data.topLevelCount,
+          maxDepthReached,
+          byType,
+          fileSizeBytes: Buffer.byteLength(json, 'utf8'),
+          navigatorSizeBytes,
+          topLevel,
+          hint: '전체 데이터는 savedTo, 구조 파악용 맵은 navigatorSavedTo 경로의 JSON에 있습니다. 먼저 navigator를 Read로 읽어 전체 구조를 파악한 뒤, 구현할 노드 id를 figma_get_node(detail:"full")로 순차 조회하세요.',
+        };
+
+        return { content: [{ type: 'text', text: JSON.stringify(summary, null, 2) }] };
+      }
+
       case 'figma_get_file_info': {
         const data = await sendToFigma('get_file_info');
         return { content: [{ type: 'text', text: JSON.stringify(data) }] };
@@ -406,20 +590,50 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case 'figma_export_node': {
         if (!args.nodeId) throw new McpError(ErrorCode.InvalidParams, 'nodeId가 필요합니다');
+        const exportFormat = (args.format as string)?.toUpperCase() ?? 'PNG';
         const data = (await sendToFigma(
           'export_node',
           {
             nodeId: args.nodeId as string,
-            format: args.format ?? 'PNG',
+            format: exportFormat,
             scale: clamp(Number(args.scale) || 2, 0.5, 4),
           },
           60_000 // 60s timeout for exports
         )) as { base64: string; format: string };
 
+        // outputDir 지정 시: 실제 파일로 저장하고 경로 반환 (에셋 추출용)
+        if (args.outputDir) {
+          const dir = args.outputDir as string;
+          await fs.mkdir(dir, { recursive: true });
+          const ext = data.format.toLowerCase();
+          const safeId = String(args.nodeId).replace(/[^a-zA-Z0-9_-]/g, '-');
+          const base = (args.fileName as string) || `node-${safeId}`;
+          const filePath = path.join(dir, `${base}.${ext}`);
+          // SVG는 base64→utf8 텍스트, PNG/JPG는 base64→바이너리
+          const buf = data.format === 'SVG'
+            ? Buffer.from(Buffer.from(data.base64, 'base64').toString('utf-8'), 'utf-8')
+            : Buffer.from(data.base64, 'base64');
+          await fs.writeFile(filePath, buf);
+          return {
+            content: [{
+              type: 'text',
+              text: JSON.stringify({ savedTo: filePath, format: data.format, bytes: buf.length }),
+            }],
+          };
+        }
+
+        // SVG는 텍스트 기반이므로 base64 디코딩 후 텍스트로 반환
+        // (Claude API가 SVG를 image로 처리하지 못함)
+        if (data.format === 'SVG') {
+          const svgText = Buffer.from(data.base64, 'base64').toString('utf-8');
+          return {
+            content: [{ type: 'text', text: svgText }],
+          };
+        }
+
         const mimeMap: Record<string, string> = {
           PNG: 'image/png',
           JPG: 'image/jpeg',
-          SVG: 'image/svg+xml',
         };
 
         return {
