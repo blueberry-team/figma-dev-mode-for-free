@@ -1,0 +1,22 @@
+# Codex CLI MCP config skeleton
+#
+# [Global] Available in all projects:
+#   cp codex-config.example.toml ~/.codex/config.toml
+#
+# [Per-project] Available only in a specific project (run from your project root):
+#   mkdir -p .codex && cp <path>/codex-config.example.toml .codex/config.toml
+#
+# Then replace <path> and <your-figma-token> with real values.
+# <path> example (macOS): /Users/yourname/projects/figma-dev-mode-for-free
+
+[mcp_servers.figma-bridge]
+command = "node"
+args = ["--import", "tsx/esm", "src/index.ts"]
+cwd = "<path>/mcp-server"
+
+[mcp_servers.figma-bridge.env]
+# Only required for comment fetch/reply features. Remove if not needed.
+FIGMA_API_TOKEN = "<your-figma-token>"
+
+# Uncomment to change the WebSocket port (default: 3055)
+# MCP_BRIDGE_PORT = "3055"
