@@ -79,6 +79,52 @@ For global registration, add to `~/.claude/mcp.json`:
 > `cwd` is required — without it `tsx` cannot be resolved.  
 > `FIGMA_API_TOKEN` is only needed for comment fetch/reply features.
 
+#### Codex CLI
+
+Replace `<path>` with the actual path where you cloned this repo.
+
+**Global** — available in all projects:
+
+```toml
+# ~/.codex/config.toml
+[mcp_servers.figma-bridge]
+command = "node"
+args = ["--import", "tsx/esm", "src/index.ts"]
+cwd = "<path>/mcp-server"
+
+[mcp_servers.figma-bridge.env]
+FIGMA_API_TOKEN = "<your-figma-token>"
+```
+
+**Per-project** — available only in a specific project:
+
+```toml
+# <your-project-root>/.codex/config.toml
+[mcp_servers.figma-bridge]
+command = "node"
+args = ["--import", "tsx/esm", "src/index.ts"]
+cwd = "<path>/mcp-server"
+
+[mcp_servers.figma-bridge.env]
+FIGMA_API_TOKEN = "<your-figma-token>"
+```
+
+You can copy the skeleton file and fill in the path:
+
+```bash
+# Global
+cp codex-config.example.toml ~/.codex/config.toml
+
+# Per-project (run from your project root)
+mkdir -p .codex && cp <path>/codex-config.example.toml .codex/config.toml
+```
+
+> `FIGMA_API_TOKEN` is only needed for comment fetch/reply features.
+
+> **Codex Desktop App shares the same `~/.codex/config.toml`.** If you've already configured it via CLI, no extra setup is needed in the App — and vice versa.
+>
+> ⚠️ There is a known bug where project-local `.codex/config.toml` is not loaded by the Desktop App. ([related issue](https://github.com/openai/codex/issues/13025)) If you use the Desktop App, global `~/.codex/config.toml` is recommended.
+
 #### Windsurf
 
 For global registration:
