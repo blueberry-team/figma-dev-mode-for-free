@@ -79,6 +79,52 @@ npm run build
 > `cwd` は必須です。ないと `tsx` モジュールが見つかりません。  
 > `FIGMA_API_TOKEN` はコメントの取得・返信機能にのみ必要です。
 
+#### Codex CLI
+
+`<パス>` をこのリポジトリをクローンした実際のパスに置き換えてください。
+
+**グローバル設定** — すべてのプロジェクトで使用：
+
+```toml
+# ~/.codex/config.toml
+[mcp_servers.figma-bridge]
+command = "node"
+args = ["--import", "tsx/esm", "src/index.ts"]
+cwd = "<パス>/mcp-server"
+
+[mcp_servers.figma-bridge.env]
+FIGMA_API_TOKEN = "<your-figma-token>"
+```
+
+**プロジェクト別設定** — 特定のプロジェクトのみで使用：
+
+```toml
+# <使用するプロジェクトルート>/.codex/config.toml
+[mcp_servers.figma-bridge]
+command = "node"
+args = ["--import", "tsx/esm", "src/index.ts"]
+cwd = "<パス>/mcp-server"
+
+[mcp_servers.figma-bridge.env]
+FIGMA_API_TOKEN = "<your-figma-token>"
+```
+
+スケルトンファイルをコピーしてパスを書き換えることもできます：
+
+```bash
+# グローバル
+cp codex-config.example.toml ~/.codex/config.toml
+
+# プロジェクト別（使用するプロジェクトルートで実行）
+mkdir -p .codex && cp <パス>/codex-config.example.toml .codex/config.toml
+```
+
+> `FIGMA_API_TOKEN` はコメントの取得・返信機能にのみ必要です。
+
+> **Codex Desktop Appも同じ `~/.codex/config.toml` を共有します。** CLIで設定済みであればAppで再設定は不要で、AppのSettings UIで追加してもCLIにすぐ反映されます。
+>
+> ⚠️ プロジェクトローカルの `.codex/config.toml` はDesktop Appで読み込まれないバグがあります。([関連Issue](https://github.com/openai/codex/issues/13025)) Desktop Appを使用する場合はグローバルの `~/.codex/config.toml` への設定を推奨します。
+
 #### Windsurf
 
 グローバル登録方法：
